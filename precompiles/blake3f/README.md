@@ -91,7 +91,29 @@ fn main() {
 
 ## Regenerating PIL and Proving Key
 
-Required after modifying `blake3f.pil` or any PIL file.
+Required after modifying `blake3f.pil` or any PIL file. The flow is split
+across two scripts so the expensive proving-key step doesn't run on every
+iteration:
+
+| Script | What it does | Time |
+|---|---|---|
+| `tools/regen-blake3f.sh` | Compile PIL → regen helpers → rebuild → tests | ~15-25 min |
+| `tools/regen-blake3f-pk.sh` | Generate proving key + verify setup | ~1 hour+ |
+
+Day-to-day after editing PIL or witness code, run `regen-blake3f.sh`. When
+you actually need to prove (or after a major PIL change), run both. Both
+scripts tee their output to a log file at the repo root
+(`regen-blake3f.log`, `regen-blake3f-pk.log`) so you can re-inspect the run
+after the fact.
+
+```bash
+# From zisk repo root:
+tools/regen-blake3f.sh                   # rebuild + tests (no PK)
+tools/regen-blake3f.sh && tools/regen-blake3f-pk.sh   # full regen
+```
+
+The manual steps below mirror what the scripts do — useful if you need to
+run individual steps or debug a script failure.
 
 ### Order of operations
 
@@ -175,7 +197,7 @@ cp ./emulator-asm/Makefile $HOME/.zisk/zisk/emulator-asm
 cp -r ./lib-c $HOME/.zisk/zisk
 ```
 
-### 5. Generate proving key (~30-45 min)
+### 5. Generate proving key (~1 hour+)
 
 Required for both `verify-constraints` and `prove`. The proving key contains
 constraint definitions and expression binaries that verify-constraints needs to
