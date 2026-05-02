@@ -10,6 +10,7 @@ use precomp_arith_eq_384::ArithEq384Instance;
 use precomp_arith_eq_384::ArithEq384Manager;
 use precomp_big_int::{Add256Instance, Add256Manager};
 use precomp_blake2::{Blake2Instance, Blake2Manager};
+use precomp_blake3f::{Blake3fInstance, Blake3fManager};
 use precomp_dma::Dma64AlignedInstance;
 use precomp_dma::DmaInstance;
 use precomp_dma::DmaManager;
@@ -43,7 +44,8 @@ use zisk_pil::DMA_PRE_POST_MEM_CPY_AIR_IDS;
 use zisk_pil::DMA_UNALIGNED_AIR_IDS;
 use zisk_pil::{
     ARITH_AIR_IDS, ARITH_EQ_384_AIR_IDS, ARITH_EQ_AIR_IDS, BINARY_ADD_AIR_IDS, BINARY_AIR_IDS,
-    BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, INPUT_DATA_AIR_IDS, KECCAKF_AIR_IDS, MEM_AIR_IDS,
+    BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, BLAKE_3_F_AIR_IDS, INPUT_DATA_AIR_IDS,
+    KECCAKF_AIR_IDS, MEM_AIR_IDS,
     MEM_ALIGN_AIR_IDS, MEM_ALIGN_BYTE_AIR_IDS, MEM_ALIGN_READ_BYTE_AIR_IDS,
     MEM_ALIGN_WRITE_BYTE_AIR_IDS, POSEIDON_2_AIR_IDS, ROM_AIR_IDS, ROM_DATA_AIR_IDS,
     SHA_256_F_AIR_IDS, ZISK_AIRGROUP_ID,
@@ -66,6 +68,7 @@ pub enum StateMachines<F: PrimeField64> {
     Sha256fManager(Arc<Sha256fManager<F>>),
     Poseidon2Manager(Arc<Poseidon2Manager<F>>),
     Blake2Manager(Arc<Blake2Manager<F>>),
+    Blake3fManager(Arc<Blake3fManager<F>>),
     ArithEqManager(Arc<ArithEqManager<F>>),
     ArithEq384Manager(Arc<ArithEq384Manager<F>>),
     Add256Manager(Arc<Add256Manager<F>>),
@@ -83,10 +86,11 @@ impl<F: PrimeField64> StateMachines<F> {
             StateMachines::Sha256fManager(_) => 5,
             StateMachines::Poseidon2Manager(_) => 6,
             StateMachines::Blake2Manager(_) => 7,
-            StateMachines::ArithEqManager(_) => 8,
-            StateMachines::ArithEq384Manager(_) => 9,
-            StateMachines::Add256Manager(_) => 10,
-            StateMachines::DmaManager(_) => 11,
+            StateMachines::Blake3fManager(_) => 8,
+            StateMachines::ArithEqManager(_) => 9,
+            StateMachines::ArithEq384Manager(_) => 10,
+            StateMachines::Add256Manager(_) => 11,
+            StateMachines::DmaManager(_) => 12,
         }
     }
 
@@ -106,6 +110,7 @@ impl<F: PrimeField64> StateMachines<F> {
             StateMachines::Sha256fManager(sm) => (**sm).build_planner(),
             StateMachines::Poseidon2Manager(sm) => (**sm).build_planner(),
             StateMachines::Blake2Manager(sm) => (**sm).build_planner(),
+            StateMachines::Blake3fManager(sm) => (**sm).build_planner(),
             StateMachines::ArithEqManager(sm) => (**sm).build_planner(),
             StateMachines::ArithEq384Manager(sm) => (**sm).build_planner(),
             StateMachines::Add256Manager(sm) => (**sm).build_planner(),
@@ -125,6 +130,7 @@ impl<F: PrimeField64> StateMachines<F> {
             StateMachines::Sha256fManager(sm) => (**sm).configure_instances(pctx, plans),
             StateMachines::Poseidon2Manager(sm) => (**sm).configure_instances(pctx, plans),
             StateMachines::Blake2Manager(sm) => (**sm).configure_instances(pctx, plans),
+            StateMachines::Blake3fManager(sm) => (**sm).configure_instances(pctx, plans),
             StateMachines::ArithEqManager(sm) => (**sm).configure_instances(pctx, plans),
             StateMachines::ArithEq384Manager(sm) => (**sm).configure_instances(pctx, plans),
             StateMachines::Add256Manager(sm) => (**sm).configure_instances(pctx, plans),
@@ -142,6 +148,7 @@ impl<F: PrimeField64> StateMachines<F> {
             StateMachines::Sha256fManager(sm) => (**sm).build_instance(ictx),
             StateMachines::Poseidon2Manager(sm) => (**sm).build_instance(ictx),
             StateMachines::Blake2Manager(sm) => (**sm).build_instance(ictx),
+            StateMachines::Blake3fManager(sm) => (**sm).build_instance(ictx),
             StateMachines::ArithEqManager(sm) => (**sm).build_instance(ictx),
             StateMachines::ArithEq384Manager(sm) => (**sm).build_instance(ictx),
             StateMachines::Add256Manager(sm) => (**sm).build_instance(ictx),
@@ -252,6 +259,7 @@ impl<F: PrimeField64> StaticSMBundle<F> {
         let mut sha256f_counter = None;
         let mut poseidon2_counter = None;
         let mut blake2_counter = None;
+        let mut blake3_counter = None;
         let mut arith_eq_counter = None;
         let mut arith_eq_384_counter = None;
         let mut add256_counter = None;
@@ -288,6 +296,10 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                     blake2_counter =
                         Some((sm.type_id(), blake2_sm.build_blake2_counter(is_asm_emulator)));
                 }
+                StateMachines::Blake3fManager(blake3_sm) => {
+                    blake3_counter =
+                        Some((sm.type_id(), blake3_sm.build_blake3f_counter(is_asm_emulator)));
+                }
                 StateMachines::ArithEqManager(arith_eq_sm) => {
                     arith_eq_counter =
                         Some((sm.type_id(), arith_eq_sm.build_arith_eq_counter(is_asm_emulator)));
@@ -319,6 +331,7 @@ impl<F: PrimeField64> StaticSMBundle<F> {
             poseidon2_counter
                 .ok_or_else(|| anyhow::anyhow!("Counter not found: {}", "Poseidon2"))?,
             blake2_counter.ok_or_else(|| anyhow::anyhow!("Counter not found: {}", "Blake2"))?,
+            blake3_counter.ok_or_else(|| anyhow::anyhow!("Counter not found: {}", "Blake3"))?,
             arith_eq_counter.ok_or_else(|| anyhow::anyhow!("Counter not found: {}", "ArithEq"))?,
             arith_eq_384_counter
                 .ok_or_else(|| anyhow::anyhow!("Counter not found: {}", "ArithEq384"))?,
@@ -353,6 +366,7 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                 let mut sha256f_collectors = Vec::new();
                 let mut poseidon2_collectors = Vec::new();
                 let mut blake2_collectors = Vec::new();
+                let mut blake3_collectors = Vec::new();
                 let mut arith_eq_collectors = Vec::new();
                 let mut arith_eq_384_collectors = Vec::new();
                 let mut add256_collectors = Vec::new();
@@ -556,6 +570,20 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                                 blake2_instance.build_blake2_collector(ChunkId(chunk_id));
                             blake2_collectors.push((*global_idx, blake2_collector));
                         }
+                        air_id if air_id == BLAKE_3_F_AIR_IDS[0] => {
+                            let blake3_instance = secn_instance
+                                .as_any()
+                                .downcast_ref::<Blake3fInstance<F>>()
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Downcast failed: expected {}",
+                                        "Blake3fInstance"
+                                    )
+                                })?;
+                            let blake3_collector =
+                                blake3_instance.build_blake3f_collector(ChunkId(chunk_id));
+                            blake3_collectors.push((*global_idx, blake3_collector));
+                        }
                         air_id if air_id == ARITH_EQ_AIR_IDS[0] => {
                             let arith_eq_instance = secn_instance
                                 .as_any()
@@ -692,6 +720,7 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                 let mut sha256f_inputs_generator = None;
                 let mut poseidon2_inputs_generator = None;
                 let mut blake2_inputs_generator = None;
+                let mut blake3_inputs_generator = None;
                 let mut arith_inputs_generator = None;
                 let mut add256_inputs_generator = None;
                 let mut dma_inputs_generator = None;
@@ -715,6 +744,10 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                         StateMachines::Blake2Manager(blake2_sm) => {
                             blake2_inputs_generator =
                                 Some(blake2_sm.build_blake2_input_generator());
+                        }
+                        StateMachines::Blake3fManager(blake3_sm) => {
+                            blake3_inputs_generator =
+                                Some(blake3_sm.build_blake3f_input_generator());
                         }
                         StateMachines::ArithEqManager(arith_eq_sm) => {
                             arith_eq_inputs_generator =
@@ -746,6 +779,7 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                     sha256f_collectors,
                     poseidon2_collectors,
                     blake2_collectors,
+                    blake3_collectors,
                     arith_eq_collectors,
                     arith_eq_384_collectors,
                     add256_collectors,
@@ -771,6 +805,9 @@ impl<F: PrimeField64> StaticSMBundle<F> {
                     })?,
                     blake2_inputs_generator.ok_or_else(|| {
                         anyhow::anyhow!("Counter not found: {}", "Blake2 input generator")
+                    })?,
+                    blake3_inputs_generator.ok_or_else(|| {
+                        anyhow::anyhow!("Counter not found: {}", "Blake3 input generator")
                     })?,
                     arith_inputs_generator.ok_or_else(|| {
                         anyhow::anyhow!("Counter not found: {}", "Arith input generator")

@@ -96,6 +96,10 @@ pub const VIRTUAL_TABLE_0_AIR_IDS: &[usize] = &[33];
 
 pub const VIRTUAL_TABLE_1_AIR_IDS: &[usize] = &[34];
 
+// TODO: regenerate traces.rs from PILOUT after rebuilding pil2-proofman with blake3f.pil.
+// The AIR_ID below is a placeholder; the canonical value comes from pil compilation.
+pub const BLAKE_3_F_AIR_IDS: &[usize] = &[35];
+
 
 //PUBLICS
 use serde::Deserialize;
@@ -490,6 +494,19 @@ trace_row!(Blake2brTraceRow<F> {
 
 pub type Blake2brTrace<R> = GenericTrace<R, 262144, 0, 31>;
 
+// TODO: regenerate from PILOUT. Stub trace_row signatures from blake3-precompile branch
+// (matching the bundled blake3f.pil); air_id 35 is a placeholder.
+trace_row!(Blake3fFixedRow<F> {
+ CLK_0: F, IV_VC_FIXED: F, __L1__: F,
+});
+pub type Blake3fFixed<F> = GenericTrace<Blake3fFixedRow<F>, 262144, 0, 35>;
+
+trace_row!(Blake3fTraceRow<F> {
+ in_use:bit, va_limbs:[u16; 2], vc_limbs:[u16; 2], vb:[bit; 32], vd:[bit; 32], va_mid_limbs:[u16; 2], vc_mid_limbs:[u16; 2], vb_mid:[bit; 32], vd_mid:[bit; 32], va_mid_carry:ubit(2), va_out_carry:ubit(2), vc_mid_carry:bit, vc_out_carry:bit, m_limbs:[u16; 2], g_active:bit, step_addr:ubit(40), in_use_clk_0:bit,
+});
+
+pub type Blake3fTrace<R> = GenericTrace<R, 262144, 0, 35>;
+
 trace_row!(SpecifiedRangesFixedRow<F> {
  OPID: [F; 29], VALS: [F; 29], __L1__: F,
 });
@@ -718,6 +735,10 @@ values!(Poseidon2AirGroupValues<F> {
 });
 
 values!(Blake2brAirGroupValues<F> {
+ gsum_result: FieldExtension<F>,
+});
+
+values!(Blake3fAirGroupValues<F> {
  gsum_result: FieldExtension<F>,
 });
 

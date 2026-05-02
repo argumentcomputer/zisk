@@ -29,3 +29,5 @@ state-machines/binary/src/binary_extension_frops_fixed.bin
 reth-inputs/
 /hints
 /benchmark
+
+.direnv/

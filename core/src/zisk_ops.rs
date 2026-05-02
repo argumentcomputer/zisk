@@ -13,12 +13,13 @@ use precompiles_helpers::DmaInfo;
 use ziskos_hints::zisklib::fcall_proxy;
 
 use crate::{
-    blake2br, operations::*, sha256f, EmulationMode, InstContext, Mem, ZiskOperationType,
-    ZiskRequiredOperation, ADD256_COST, ARITHA32_COST, ARITHAM32_COST, ARITH_EQ_384_COST,
-    ARITH_EQ_COST, BINARY_ADD_COST, BINARY_COST, BINARY_E_COST, BLAKE2_COST, DMA_64_ALIGNED_COST,
-    DMA_COST, DMA_INPUTCPY_COST, DMA_MEMCMP_COST, DMA_MEMCPY_COST, DMA_MEMSET_COST,
-    DMA_PRE_POST_COST, DMA_UNALIGNED_COST, EXTRA_PARAMS_ADDR, FCALL_COST, INPUT_ADDR,
-    INTERNAL_COST, KECCAK_COST, M64, MAX_INPUT_SIZE, POSEIDON2_COST, REG_A0, SHA256_COST, SYS_ADDR,
+    blake2br, blake3f, operations::*, sha256f, EmulationMode, InstContext, Mem,
+    ZiskOperationType, ZiskRequiredOperation, ADD256_COST, ARITHA32_COST, ARITHAM32_COST,
+    ARITH_EQ_384_COST, ARITH_EQ_COST, BINARY_ADD_COST, BINARY_COST, BINARY_E_COST, BLAKE2_COST,
+    BLAKE3_COST, DMA_64_ALIGNED_COST, DMA_COST, DMA_INPUTCPY_COST, DMA_MEMCMP_COST,
+    DMA_MEMCPY_COST, DMA_MEMSET_COST, DMA_PRE_POST_COST, DMA_UNALIGNED_COST, EXTRA_PARAMS_ADDR,
+    FCALL_COST, INPUT_ADDR, INTERNAL_COST, KECCAK_COST, M64, MAX_INPUT_SIZE, POSEIDON2_COST,
+    REG_A0, SHA256_COST, SYS_ADDR,
 };
 use fields::{poseidon2_hash, Goldilocks, Poseidon16, PrimeField64};
 use paste::paste;
@@ -61,6 +62,7 @@ pub enum OpType {
     BigInt,
     Dma,
     Blake2,
+    Blake3,
     Profile,
 }
 
@@ -81,6 +83,7 @@ impl From<OpType> for ZiskOperationType {
             OpType::BigInt => ZiskOperationType::BigInt,
             OpType::Dma => ZiskOperationType::Dma,
             OpType::Blake2 => ZiskOperationType::Blake2,
+            OpType::Blake3 => ZiskOperationType::Blake3,
             OpType::Profile => ZiskOperationType::Profile,
         }
     }
@@ -105,6 +108,7 @@ impl Display for OpType {
             Self::BigInt => write!(f, "BigInt"),
             Self::Dma => write!(f, "Dma"),
             Self::Blake2 => write!(f, "Blake2"),
+            Self::Blake3 => write!(f, "Blake3"),
             Self::Profile => write!(f, "Profile"),
         }
     }
@@ -130,6 +134,7 @@ impl FromStr for OpType {
             "bint" => Ok(Self::BigInt),
             "dma" => Ok(Self::Dma),
             "bl" => Ok(Self::Blake2),
+            "b3" => Ok(Self::Blake3),
             "profile" => Ok(Self::Profile),
             _ => Err(InvalidOpTypeError),
         }
@@ -472,6 +477,7 @@ define_ops! {
     (Secp256r1Add, "secp256r1_add", ArithEq, ARITH_EQ_COST, 0xe8, 144, 64, opc_secp256r1_add, op_secp256r1_add, ops_secp256r1_add),
     (Secp256r1Dbl, "secp256r1_dbl", ArithEq, ARITH_EQ_COST, 0xe9, 64, 64, opc_secp256r1_dbl, op_secp256r1_dbl, ops_secp256r1_dbl),
     (Blake2, "blake2", Blake2, BLAKE2_COST, 0xea, 280 , 128, opc_blake2, op_blake2, ops_blake2),
+    (Blake3, "blake3", Blake3, BLAKE3_COST, 0xeb, 128, 32, opc_blake3, op_blake3, ops_blake3),
     (FcallParam, "fcall_param", Fcall, FCALL_COST, 0xf6, 0, 0, opc_fcall_param, op_fcall_param, ops_none),
     (Fcall, "fcall", Fcall, FCALL_COST, 0xf7, 0, 0, opc_fcall, op_fcall, ops_none),
     (FcallGet, "fcall_get", Fcall, FCALL_COST, 0xf8, 0, 0, opc_fcall_get, op_fcall_get, ops_none),
@@ -1501,6 +1507,46 @@ pub fn op_blake2(_a: u64, _b: u64) -> (u64, bool) {
 #[inline(always)]
 pub fn ops_blake2(ctx: &InstContext, stats: &mut dyn OpStats) {
     precompiled_stats_data(ctx, stats, &[4, 8], &[], 1);
+}
+
+pub fn opc_blake3(ctx: &mut InstContext) {
+    const IO_CHUNKS: usize = 6;
+    const MSG_REM: usize = 2;
+    const WORDS: usize = 2 + IO_CHUNKS + (IO_CHUNKS + MSG_REM);
+    let mut data = [0u64; WORDS];
+
+    precompiled_load_data(ctx, 2, 2, IO_CHUNKS, MSG_REM, None, &mut data, "blake3");
+
+    if ctx.emulation_mode != EmulationMode::ConsumeMemReads {
+        let io_addr = data[0];
+
+        let (_params, rest) = data.split_at_mut(2);
+        let (io_slice, message_slice) = rest.split_at_mut(IO_CHUNKS);
+        let (cv_slice, aux_slice) = io_slice.split_at_mut(4);
+
+        let cv: &mut [u64; 4] = cv_slice.try_into().expect("io cv slice");
+        let aux: &[u64; 2] = (&*aux_slice).try_into().expect("io aux slice");
+        let message: &[u64; 8] = (&*message_slice).try_into().expect("message slice");
+
+        blake3f(cv, message, aux);
+
+        for (i, d) in cv.iter().enumerate() {
+            ctx.mem.write(io_addr + (8 * i as u64), *d, 8);
+        }
+    }
+
+    ctx.c = 0;
+    ctx.flag = false;
+}
+
+#[inline(always)]
+pub fn op_blake3(_a: u64, _b: u64) -> (u64, bool) {
+    unimplemented!("op_blake3() is not implemented");
+}
+
+#[inline(always)]
+pub fn ops_blake3(ctx: &InstContext, stats: &mut dyn OpStats) {
+    precompiled_stats_data(ctx, stats, &[6, 8], &[], 1);
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,0 +1,768 @@
+require "std_constants.pil"
+require "std_lookup.pil"
+require "std_range_check.pil"
+require "operations.pil"
+require "opids.pil"
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BLAKE3 COMPRESSION FUNCTION PRECOMPILE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Constrains one full Blake3 compression (7 rounds × 8 G-functions = 56 G-calls)
+// plus 4 output capture rows where last-round outputs land. Total: 60 rows per compression.
+// Memory writes full final state (8 u64s); the guest does the output XOR.
+//
+// Each G-function is constrained in a single row with explicit intermediate columns.
+// Second-half outputs are stored on FUTURE rows via row shifts (the next G-function
+// that reads those state words). This avoids separate output columns.
+//
+// Reference: https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf
+//
+// ── SOUNDNESS AUDIT (audited against v0.17 blake2br.pil precedent) ─────────
+//
+// The Zisk v0.17 release notes list "Added missing BLAKE2 constraints" as a
+// soundness fix: in v0.16 blake2br.pil, only the LOW half of each 64-bit state
+// word was constrained across the column-to-diagonal transition rows
+// (CLK[12]/[15]/[18]/[21]); the HIGH half (limb index [1]) was left
+// unconstrained, allowing witness malleability. The v0.17 fix added 7
+// transition constraints of the form `(va[1] - 10'va[1]) === 0` (blake2br.pil
+// lines 324-343).
+//
+// Blake3 uses native 32-bit words (vs Blake2b's 64-bit) AND 1 row per G-
+// function (vs Blake2b's 3 rows per G), so the binding semantics differ:
+//   Blake2 needs explicit transition constraints because each G occupies 3
+//   rows and inputs of the next G live on a separate row from outputs of the
+//   previous G — the connection has to be stated.
+//   Blake3's output constraints (gated by g_active) at the source row use
+//   row-shifted column references (va'(A_SHIFT), vb_out, vc_out, vd_out) that
+//   directly bind the destination row's input columns. No separate transition
+//   constraint is needed; the equality is part of the G-function constraint.
+//
+// Audit checklist results (verified row-by-row across all 7 rounds + output):
+//
+// 1. STATE-WORD LIMB DECOMPOSITION — ✅ COMPLETE
+//    All limbs unconditionally range-checked: va_limbs[0..1], vc_limbs[0..1],
+//    va_mid_limbs[0..1], vc_mid_limbs[0..1], m_limbs[0..1].
+//    All bits unconditionally booleanized: vb[0..32], vd[0..32], vb_mid[0..32],
+//    vd_mid[0..32], in_use, g_active, in_use_clk_0, vc_mid_carry, vc_out_carry.
+//    Carries unconditionally restricted: va_mid_carry / va_out_carry ∈ {0,1,2}.
+//
+// 2. PHASE BOUNDARIES — ✅ ALL FOUR CLASSES BOUND
+//    Each G's output binds the destination row's input columns via shifts:
+//      add3_check(va'(A_SHIFT), va_mid, vb_mid_packed, my, va_out_carry)
+//      rotl_xor_check(va'(A_SHIFT), vd_out, vd_mid, 8)   [vd_out = sum_g CLK_G[g]*vd[j]'(D_SHIFT[g])]
+//      add2_check(sum_g CLK_G[g]*vc'(C_SHIFT[g]), vc_mid, vd_out_packed, vc_out_carry)
+//      rotl_xor_check(vc_out, vb_out, vb_mid, 7)         [vb_out = sum_g CLK_G[g]*vb[j]'(B_SHIFT[g])]
+//    Verified routing for column→diagonal (rows 0-3 → 4-7 within each round),
+//    inter-round (rows 4-7 of round r → 8-11 of round r+1), and last-G→output
+//    (rows 52-55 → 56-59).
+//
+// 3. AUX SCALARS (counter, block_len, flags) — ⚠️ NOT RANGE-CHECKED IN PIL
+//    block_len (state[14]), flags (state[15]) are bound to the full 32-bit
+//    vd_packed via the aux memory reads at CLK 1. Per Blake3 spec: block_len
+//    ≤ 64 and flags occupy 8 bits. Currently any 32-bit value is accepted.
+//    THIS IS NOT A SOUNDNESS FLAW: the precompile faithfully implements the
+//    compression function for whatever scalars the guest provides; an out-of-
+//    range value produces a deterministic but non-standard hash. The guest is
+//    responsible for spec compliance. This matches the pattern of curve
+//    precompiles requiring "point on curve" / "field membership" — caller-
+//    responsibility conditions on data inputs (vs. soundness-critical
+//    constraints on selectors like Blake2's round_idx, which is range-checked).
+//    Defense-in-depth: ziskos/entrypoint/src/syscalls/blake3f.rs documents
+//    the bounds and Blake3Io::pack_block_len_and_flags debug-asserts
+//    them in non-release builds.
+//
+// 4. XOR FEED-FORWARD — ✅ ENFORCED VIA MEMORY WRITE
+//    On output rows 56-59, vb_mid is bound to bit decomposition of va and
+//    vd_mid is bound to bit decomposition of vc (constraints below). The cv
+//    writeback at CLK 56 emits va_xor_vc_packed = pack(vb_mid XOR vd_mid) and
+//    vb_xor_vd_packed = pack(vb XOR vd) directly to memory_value, coupling
+//    the witness columns to memory at io_addr+0..32. A malicious witness
+//    cannot decouple them.
+//
+// 5. vb_mid / vd_mid REPURPOSING ON OUTPUT ROWS — ✅ FULLY BOUND
+//    `is_writing_state * (vb_mid_packed - va) === 0` and the symmetric
+//    `vd_mid_packed - vc === 0` fire only on rows 56-59 (gated by
+//    is_writing_state = sum CLK[56..59] * in_use). On those rows, since
+//    each vb_mid[j] / vd_mid[j] is booleanized AND va, vc are range-checked
+//    to [0, 2^32), the equation `pack_bits(bits) === u32_value` admits a
+//    unique bit decomposition. No unsoundness possible.
+
+airtemplate Blake3f(const int N = 2**22) {
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CONSTANTS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const int CLOCKS_PER_ROUND = 8;
+    const int ROUNDS = 7;
+    const int CLOCKS_G = CLOCKS_PER_ROUND * ROUNDS; // 56
+    const int CLOCKS_WRITE = 4; // output capture rows where last-round outputs land via shifts
+    const int CLOCKS = CLOCKS_G + CLOCKS_WRITE; // 60
+
+    if (N < 2 * CLOCKS) {
+        error(`Blake3f requires N >= ${2*CLOCKS}, got N=${N}`);
+    }
+
+    const int NUM_NON_USABLE_ROWS = N % CLOCKS;
+    const int NUM_BLAKE3F;
+    if (NUM_NON_USABLE_ROWS == 0) {
+        NUM_BLAKE3F = N / CLOCKS;
+    } else {
+        NUM_BLAKE3F = (N - NUM_NON_USABLE_ROWS) / CLOCKS - 1;
+    }
+    println(`Blake3f capacity: ${NUM_BLAKE3F} compressions (N=${N})`);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // G-FUNCTION INDEX TABLE
+    // ═══════════════════════════════════════════════════════════════════════
+    // G_INDEX[g][0..3] = (a, b, c, d) state word indices for G-function g
+    // G0-G3: column mixing, G4-G7: diagonal mixing
+
+    // G_INDEX (for reference only, not used in constraints):
+    //   G0=[0,4,8,12]  G1=[1,5,9,13]  G2=[2,6,10,14]  G3=[3,7,11,15]
+    //   G4=[0,5,10,15] G5=[1,6,11,12] G6=[2,7,8,13]   G7=[3,4,9,14]
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MESSAGE SCHEDULE (pre-expanded, for reference)
+    // ═══════════════════════════════════════════════════════════════════════
+    // Permutation: [2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]
+    // Round 0: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+    // Round 1: [2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]
+    // Round 2: [3,4,10,12,13,2,7,14,6,5,9,0,11,15,8,1]
+    // Round 3: [10,7,12,9,14,3,13,15,4,0,11,2,5,8,1,6]
+    // Round 4: [12,13,9,11,15,10,14,8,7,2,5,3,0,1,6,4]
+    // Round 5: [9,14,11,5,8,12,15,1,13,3,0,10,2,6,4,7]
+    // Round 6: [11,15,5,0,1,9,8,6,14,10,2,12,3,4,7,13]
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // OUTPUT SHIFT DISTANCES
+    // ═══════════════════════════════════════════════════════════════════════
+    // For each G-function position (0-7 within a round), the shift distance
+    // (rows ahead) where each output value must appear.
+
+    const int A_SHIFT = 4; // constant for all G-functions
+    const int B_SHIFT[8] = [7, 3, 3, 3, 5, 5, 5, 1];
+    const int C_SHIFT[8] = [6, 6, 2, 2, 6, 6, 2, 2];
+    const int D_SHIFT[8] = [5, 5, 5, 1, 7, 3, 3, 3];
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLOCK SELECTORS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    col fixed CLK_0 = [[1, 0:(CLOCKS-1)]:NUM_BLAKE3F, 0...];
+
+    const expr CLK[CLOCKS];
+    for (int i = 0; i < CLOCKS; i++) {
+        CLK[i] = (i)'CLK_0;
+    }
+
+    // Position within a round (0-7), repeating every 8 rows during G computation
+    // CLK_G[j] = 1 when this row is G-function j within its round (for rows 0-55)
+    const expr CLK_G[CLOCKS_PER_ROUND];
+    for (int j = 0; j < CLOCKS_PER_ROUND; j++) {
+        expr sel = 0;
+        for (int r = 0; r < ROUNDS; r++) {
+            sel += CLK[r * CLOCKS_PER_ROUND + j];
+        }
+        CLK_G[j] = sel;
+    }
+
+    col witness bits(1) in_use;
+    in_use * (1 - in_use) === 0;
+
+    const expr in_use_latched = clock_set(start: 1, end: CLOCKS);
+    in_use_latched * (in_use - 'in_use) === 0;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // G-FUNCTION STATE VARIABLES
+    // ═══════════════════════════════════════════════════════════════════════
+    // Input state: va, vc as u16 limbs (for ADD), vb, vd as bits (for XOR-rotate)
+    // Intermediate state: same representation for first-half outputs
+
+    // --- Input state ---
+    col witness bits(16) va_limbs[2];
+    col witness bits(16) vc_limbs[2];
+    col witness bits(1)  vb[32];
+    col witness bits(1)  vd[32];
+
+    const expr va = va_limbs[0] + P2_16 * va_limbs[1];
+    const expr vc = vc_limbs[0] + P2_16 * vc_limbs[1];
+
+    for (int i = 0; i < 2; i++) {
+        range_check(expression: va_limbs[i], min: 0, max: P2_16 - 1);
+        range_check(expression: vc_limbs[i], min: 0, max: P2_16 - 1);
+    }
+    for (int j = 0; j < 32; j++) {
+        vb[j] * (1 - vb[j]) === 0;
+        vd[j] * (1 - vd[j]) === 0;
+    }
+
+    const expr vb_packed = pack_bits(vb);
+    const expr vd_packed = pack_bits(vd);
+
+    // --- Intermediate state (first-half G output) ---
+    col witness bits(16) va_mid_limbs[2];
+    col witness bits(16) vc_mid_limbs[2];
+    col witness bits(1)  vb_mid[32];
+    col witness bits(1)  vd_mid[32];
+
+    const expr va_mid = va_mid_limbs[0] + P2_16 * va_mid_limbs[1];
+    const expr vc_mid = vc_mid_limbs[0] + P2_16 * vc_mid_limbs[1];
+
+    for (int i = 0; i < 2; i++) {
+        range_check(expression: va_mid_limbs[i], min: 0, max: P2_16 - 1);
+        range_check(expression: vc_mid_limbs[i], min: 0, max: P2_16 - 1);
+    }
+    for (int j = 0; j < 32; j++) {
+        vb_mid[j] * (1 - vb_mid[j]) === 0;
+        vd_mid[j] * (1 - vd_mid[j]) === 0;
+    }
+
+    const expr vb_mid_packed = pack_bits(vb_mid);
+    const expr vd_mid_packed = pack_bits(vd_mid);
+
+    // --- Carry witnesses for u32 modular addition ---
+    // Each add3 (a = b + c + d mod 2^32) can overflow by at most 2 (carry ∈ {0,1,2}).
+    // Each add2 (a = b + c mod 2^32) can overflow by at most 1 (carry ∈ {0,1}).
+    // Storing the carry explicitly reduces the add constraint from degree 4
+    // (polynomial factoring of `sum * (sum+P2_32) * (sum+2*P2_32)`) to degree 2.
+    // The AIR's new max constraint degree is 3 (from rotl_xor_check), down from 4.
+    col witness bits(2) va_mid_carry;  // carry of va + vb + mx    (first-half G)
+    col witness bits(2) va_out_carry;  // carry of va_mid + vb_mid + my (second-half G)
+    col witness bits(1) vc_mid_carry;  // carry of vc + vd_mid          (first-half G)
+    col witness bits(1) vc_out_carry;  // carry of vc_mid + vd_out      (second-half G)
+
+    // Further restrict the 2-bit carries to {0, 1, 2} (exclude 3). Degree 3, unconditional.
+    // Zero is valid in padding rows so no gating is needed.
+    va_mid_carry * (va_mid_carry - 1) * (va_mid_carry - 2) === 0;
+    va_out_carry * (va_out_carry - 1) * (va_out_carry - 2) === 0;
+    // Booleanness for the 1-bit carries (bits(1) is a storage hint, not a constraint).
+    vc_mid_carry * (1 - vc_mid_carry) === 0;
+    vc_out_carry * (1 - vc_out_carry) === 0;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // XOR FEED-FORWARD VIA REPURPOSED vb_mid / vd_mid ON OUTPUT ROWS
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Blake3's compression ends with the XOR feed-forward
+    //   h[i] = state[i] ^ state[i+8]   for i in 0..8
+    //
+    // Half of those XORs are between vb (state[4..8]) and vd (state[12..16])
+    // which are already bit-form columns — those XORs are trivial to express.
+    // The other half are between va (state[0..4]) and vc (state[8..12]) which
+    // are 16-bit limb columns and would need a bit decomposition.
+    //
+    // To avoid adding 64 new bit columns to every row, we REUSE vb_mid and
+    // vd_mid (which are bit columns already, used as G-function intermediates
+    // on rows 0-55 but completely unconstrained on the output rows 56-59
+    // because g_active = 0 there).
+    //
+    // On output rows we bind:
+    //   pack_bits(vb_mid) === va    (vb_mid holds bit decomp of va)
+    //   pack_bits(vd_mid) === vc    (vd_mid holds bit decomp of vc)
+    //
+    // The XOR feed-forward then becomes a bitwise XOR over those columns:
+    //   va_xor_vc_packed = pack(vb_mid[j] XOR vd_mid[j])
+    //   vb_xor_vd_packed = pack(vb[j]    XOR vd[j])
+    //
+    // Both va_xor_vc_packed and vb_xor_vd_packed are PIL expressions (not
+    // witnesses) and are referenced from the cv writeback at CLK 56.
+
+    // Bitwise XOR expressions, packed to a single 32-bit field element.
+    // On output rows 56-59, vb_mid is bound to bit decomp of va (see binding
+    // constraint below), so vb_mid XOR vd_mid IS state[0..4] XOR state[8..12].
+    expr va_xor_vc_packed = 0;
+    for (int j = 0; j < 32; j++) {
+        va_xor_vc_packed += (vb_mid[j] + vd_mid[j] - 2 * vb_mid[j] * vd_mid[j]) * 2**j;
+    }
+    expr vb_xor_vd_packed = 0;
+    for (int j = 0; j < 32; j++) {
+        vb_xor_vd_packed += (vb[j] + vd[j] - 2 * vb[j] * vd[j]) * 2**j;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MESSAGE WORDS
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // The 16 original message words are read from memory onto rows 0-15 (m_limbs).
+    // Each G-function row uses two words (mx, my) derived as EXPRESSIONS from m
+    // via compile-time row shifts based on MSG_SCHEDULE. This guarantees soundness:
+    // mx/my ARE the memory-constrained m values by construction (no lookup needed).
+    // This is the same pattern as SHA-256f's w column access.
+
+    // --- Original message words (memory-read source, on rows 0-15) ---
+    col witness bits(16) m_limbs[2];
+    const expr m = m_limbs[0] + P2_16 * m_limbs[1];
+    for (int i = 0; i < 2; i++) {
+        range_check(expression: m_limbs[i], min: 0, max: P2_16 - 1);
+    }
+
+    // --- Message permutation schedule (pre-expanded) ---
+    const int MSG_PERM[16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+
+    const int MSG_SCHEDULE[7][16];
+    for (int i = 0; i < 16; i++) {
+        MSG_SCHEDULE[0][i] = i;
+    }
+    for (int r = 1; r < 7; r++) {
+        for (int i = 0; i < 16; i++) {
+            MSG_SCHEDULE[r][i] = MSG_SCHEDULE[r-1][MSG_PERM[i]];
+        }
+    }
+
+    // --- Computation message words (mx, my) as expressions via row shifts ---
+    // For each G-function row R in round r, G-function g:
+    //   mx = m at row MSG_SCHEDULE[r][2*g] (shift = MSG_SCHEDULE[r][2*g] - R)
+    //   my = m at row MSG_SCHEDULE[r][2*g+1] (shift = MSG_SCHEDULE[r][2*g+1] - R)
+    // CLK[R] selects the active row; m'(shift) accesses the correct original word.
+    expr mx = 0;
+    expr my = 0;
+    for (int r = 0; r < ROUNDS; r++) {
+        for (int g = 0; g < CLOCKS_PER_ROUND; g++) {
+            int row = r * CLOCKS_PER_ROUND + g;
+            int idx_x = MSG_SCHEDULE[r][2 * g];
+            int idx_y = MSG_SCHEDULE[r][2 * g + 1];
+            int shift_x = (idx_x - row) % CLOCKS;
+            int shift_y = (idx_y - row) % CLOCKS;
+            mx += CLK[row] * m'(shift_x);
+            my += CLK[row] * m'(shift_y);
+        }
+    }
+
+    // G-function active selector
+    col witness bits(1) g_active;
+    const expr g_active_expr = clock_set(in_use, start: 0, end: CLOCKS_G);
+    g_active <== g_active_expr;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // G-FUNCTION CONSTRAINTS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // --- First half: a'=a+b+mx, d'=(d^a')>>>16, c'=c+d', b'=(b^c')>>>12 ---
+    add3_check(va_mid, va, vb_packed, mx, va_mid_carry);
+    rotl_xor_check(va_mid, vd_mid, vd, 16);
+    add2_check(vc_mid, vc, vd_mid_packed, vc_mid_carry);
+    rotl_xor_check(vc_mid, vb_mid, vb, 12);
+
+    // --- Second half: a''=a'+b'+my, d''=(d'^a'')>>>8, c''=c'+d'', b''=(b'^c'')>>>7 ---
+    // Outputs reference FUTURE rows via shifts. The shift distance depends on which
+    // G-function position we're at within the round (selected by CLK_G).
+
+    // a_out: always va 4 rows ahead
+    const expr va_out = va'(A_SHIFT);
+
+    // d_out: variable shift, built as CLK_G-weighted sum of shifted vd columns
+    const expr vd_out[32];
+    for (int j = 0; j < 32; j++) {
+        expr d_j = 0;
+        for (int g = 0; g < CLOCKS_PER_ROUND; g++) {
+            d_j += CLK_G[g] * vd[j]'(D_SHIFT[g]);
+        }
+        vd_out[j] = d_j;
+    }
+    const expr vd_out_packed = pack_bits(vd_out);
+
+    // c_out: variable shift for vc limbs
+    expr vc_out = 0;
+    for (int g = 0; g < CLOCKS_PER_ROUND; g++) {
+        vc_out += CLK_G[g] * vc'(C_SHIFT[g]);
+    }
+
+    // b_out: variable shift for vb bits
+    const expr vb_out[32];
+    for (int j = 0; j < 32; j++) {
+        expr b_j = 0;
+        for (int g = 0; g < CLOCKS_PER_ROUND; g++) {
+            b_j += CLK_G[g] * vb[j]'(B_SHIFT[g]);
+        }
+        vb_out[j] = b_j;
+    }
+
+    add3_check(va_out, va_mid, vb_mid_packed, my, va_out_carry);
+    rotl_xor_check(va_out, vd_out, vd_mid, 8);
+    add2_check(vc_out, vc_mid, vd_out_packed, vc_out_carry);
+    rotl_xor_check(vc_out, vb_out, vb_mid, 7);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // IV CONSTANTS ON LOAD-STATE ROWS
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // The Blake3 compression starts from a 16-word state laid out as
+    //   state[0..8]   = chaining_value (read from memory)
+    //   state[8..12]  = IV[0..4]       (constants — enforced here)
+    //   state[12..14] = counter_lo, counter_hi  (read from memory at CLK 1)
+    //   state[14]     = block_len      (read from memory at CLK 1)
+    //   state[15]     = flags          (read from memory at CLK 1)
+    //
+    // On rows 0-3, vc holds state[8..12] = IV[0..4]. We bind it to a fixed
+    // column carrying the IV constants, then `state[12..16]` (the counter,
+    // block_len, flags) is enforced via the memory bus reads at CLK 1.
+
+    col fixed IV_VC_FIXED = [[
+        0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+        0:(CLOCKS-4)
+    ]:NUM_BLAKE3F, 0...];
+
+    const expr is_load_state = clock_set(in_use, start: 0, end: 4);
+    is_load_state * (vc - IV_VC_FIXED) === 0;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // BIND vb_mid / vd_mid TO va / vc ON OUTPUT ROWS (feed-forward decomposition)
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // On the output capture rows (56-59), the G function is inactive
+    // (g_active = 0), so vb_mid and vd_mid have no other constraints beyond
+    // booleanity. We repurpose them as the bit decomposition of va and vc:
+    //
+    //   pack_bits(vb_mid) === va    (vb_mid holds bits of state[0..4])
+    //   pack_bits(vd_mid) === vc    (vd_mid holds bits of state[8..12])
+    //
+    // This is what enables `va_xor_vc_packed` (defined above) to express the
+    // XOR of va and vc bitwise without any extra columns.
+
+    const expr is_writing_state = clock_set(in_use, start: CLOCKS_G, end: CLOCKS);
+    is_writing_state * (vb_mid_packed - va) === 0;
+    is_writing_state * (vd_mid_packed - vc) === 0;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MEMORY INTERFACE (Blake3f v2 — in-place cv update)
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // MEMORY ACCESS MAP (20 operations via 4 parallel ports)
+    // ============================================================================
+    //  CLK 0  | STEP_MAIN   | R | 4 ports: io_addr+0..32     (4 u64s = cv)
+    //  CLK 1  | STEP_MAIN   | R | 2 ports: io_addr+32..48    (2 u64s = aux)
+    //                            (port 0 = counter, port 1 = block_len|flags)
+    //  CLK 2  | STEP_MAIN   | R | 4 ports: message_addr+0..32  (4 u64s = m[0..4])
+    //  CLK 3  | STEP_MAIN   | R | 4 ports: message_addr+32..64 (4 u64s = m[4..8])
+    //  CLK 4  | STEP_MAIN   | R | 2 ports: ADDR_IND_0, ADDR_IND_1 (indirect params)
+    //  CLK 56 | STEP_MAIN+1 | W | 4 ports: io_addr+0..32     (4 u64s = new cv,
+    //                                                          XOR feed-forward)
+    // ============================================================================
+    // Total: 4 cv reads + 2 aux reads + 8 message reads + 2 indirect + 4 cv writes = 20 ops
+    //
+    // Mirrors sha256f's 2-indirection in-place state pattern. The cv portion of
+    // the io buffer (first 32 bytes) is updated in place with the XOR
+    // feed-forward output `h[i] = state[i] ^ state[i+8]`. The aux portion
+    // (next 16 bytes) is read-only and ends up bound to vd at rows 0..3.
+
+    col witness bits(40) step_addr;
+
+    const int STEP_MAIN = 0;
+    const int ADDR_OP = STEP_MAIN + 1;
+    const int ADDR_IO = ADDR_OP + 1;
+    const int ADDR_MESSAGE = ADDR_IO + 1;
+    const int ADDR_IND_0 = ADDR_MESSAGE + 1;
+    const int ADDR_IND_1 = ADDR_IND_0 + 1;
+
+    // Verify address indirections
+    clock_eq(step_addr, ADDR_IO, ADDR_IND_0) === 0;
+    clock_eq(step_addr, ADDR_MESSAGE, ADDR_IND_1) === 0;
+
+    const int WORD_SIZE = 8; // bytes per u64
+    const int NUM_PARALLEL_MEM_OPS = 4;
+    const int IO_AUX_OFFSET = 4 * WORD_SIZE; // aux starts 32 bytes into io buffer
+
+    // Memory operation clocks
+    const int CLK_SEQ_READ_CV[1] = [0];
+    const int CLK_SEQ_READ_AUX[1] = [1];
+    const int CLK_SEQ_READ_MESSAGE[2] = [2, 3];
+    const int CLK_SEQ_READ_PARAMS[1] = [4];
+    const int CLK_SEQ_WRITE_CV[1] = [56];
+    const int CLK_SEQ_ALL_MEM_OPS[6] = [0, 1, 2, 3, 4, 56];
+
+    const expr mem_is_write = clock_set_with_seq(seq: CLK_SEQ_WRITE_CV);
+    const expr main_step = clock_shift_with_seq(step_addr, STEP_MAIN, seq: CLK_SEQ_ALL_MEM_OPS);
+
+    // --- Per-port memory address and value ---
+    for (int port = 0; port < NUM_PARALLEL_MEM_OPS; port++) {
+        expr mem_sel = clock_set_with_seq(in_use, seq: CLK_SEQ_ALL_MEM_OPS);
+
+        const expr mem_addr =
+            // Read cv: ports 0-3 at CLK 0, addresses io_addr + 8*port
+            clock_shift(step_addr, ADDR_IO,
+                        start: 0,
+                        offset: WORD_SIZE * port) +
+            // Read aux: ports 0-1 at CLK 1, addresses io_addr + 32 + 8*port
+            clock_shift(step_addr, ADDR_IO,
+                        start: 1,
+                        offset: IO_AUX_OFFSET + WORD_SIZE * port) +
+            // Read message: ports 0-3 at CLK 2,3, addresses message_addr + (8*port + 32*clk_offset)
+            clock_shift(step_addr, ADDR_MESSAGE,
+                        start: 2, end: 4,
+                        step: 1, skip: 0,
+                        offset: WORD_SIZE * port,
+                        delta: WORD_SIZE * NUM_PARALLEL_MEM_OPS) +
+            // Read indirect params: ports 0-1 at CLK 4
+            clock_shift(step_addr, ADDR_OP,
+                        start: 4,
+                        offset: WORD_SIZE * port,
+                        delta: WORD_SIZE) +
+            // Write cv: ports 0-3 at CLK 56, addresses io_addr + 8*port (in-place)
+            clock_shift(step_addr, ADDR_IO,
+                        start: 56,
+                        offset: WORD_SIZE * port);
+
+        // Memory value expressions per port.
+        //
+        // CV reads/writes use rows 0..3 (load state) for inputs and rows
+        // 56..59 (output capture) for the XOR feed-forward outputs.
+        //
+        // Layout on rows 0..3:
+        //   Row 0: va=s[0], vb=s[4], vc=s[8],  vd=s[12]
+        //   Row 1: va=s[1], vb=s[5], vc=s[9],  vd=s[13]
+        //   Row 2: va=s[2], vb=s[6], vc=s[10], vd=s[14]
+        //   Row 3: va=s[3], vb=s[7], vc=s[11], vd=s[15]
+        //
+        // Layout on output rows 56..59 (same column layout as 0..3):
+        //   Row 56: va=fs[0], vb=fs[4], vc=fs[8],  vd=fs[12]
+        //   ... etc
+        //
+        // The XOR feed-forward writes h[i] = fs[i] ^ fs[i+8]:
+        //   h[0..4] = va_xor_vc_packed at rows 56..59 (via va_bits/vc_bits)
+        //   h[4..8] = vb_xor_vd_packed at rows 56..59 (vb/vd are already bits)
+        expr mem_value[2] = [0, 0];
+        switch (port) {
+            case 0:
+                // CLK 4: read indirect param 0 (io_addr)
+                mem_value[0] += clock_shift(step_addr, ADDR_IND_0, 4);
+
+                // CLK 0: read cv u64[0] = (s[0], s[1]) = (va@0, va@1) = (va, va'1)
+                mem_value[0] += CLK[0] * va;
+                mem_value[1] += CLK[0] * va'1;
+
+                // CLK 1: read aux[0] = counter = (counter_lo, counter_hi)
+                //        = (vd_packed@0, vd_packed@1) = (1'vd_packed, vd_packed)
+                // (current row at CLK 1 is row 1; vd@0 is one row back.)
+                mem_value[0] += CLK[1] * 1'vd_packed;
+                mem_value[1] += CLK[1] * vd_packed;
+
+                // CLK 2: read message[0] = (m[0], m[1]) = (2'm, 1'm)
+                mem_value[0] += CLK[2] * 2'm;
+                mem_value[1] += CLK[2] * 1'm;
+
+                // CLK 3: read message[4] = (m[8], m[9]) = (m'5, m'6)
+                mem_value[0] += CLK[3] * m'5;
+                mem_value[1] += CLK[3] * m'6;
+
+                // CLK 56: write cv u64[0] = (h[0], h[1]) = XOR feed-forward
+                //         h[0] = state[0] XOR state[8] at row 56 = va_xor_vc_packed (current)
+                //         h[1] = state[1] XOR state[9] at row 57 = va_xor_vc_packed'1
+                mem_value[0] += CLK[56] * va_xor_vc_packed;
+                mem_value[1] += CLK[56] * va_xor_vc_packed'1;
+
+            case 1:
+                // CLK 4: read indirect param 1 (message_addr)
+                mem_value[0] += clock_shift(step_addr, ADDR_IND_1, 4);
+
+                // CLK 0: read cv u64[1] = (s[2], s[3]) = (va'2, va'3)
+                mem_value[0] += CLK[0] * va'2;
+                mem_value[1] += CLK[0] * va'3;
+
+                // CLK 1: read aux[1] = block_len|flags = (block_len, flags)
+                //        = (vd_packed@2, vd_packed@3) = (vd_packed'1, vd_packed'2)
+                // (current row at CLK 1 is row 1; vd@2 is one row ahead, vd@3 is two ahead.)
+                mem_value[0] += CLK[1] * vd_packed'1;
+                mem_value[1] += CLK[1] * vd_packed'2;
+
+                // CLK 2: read message[1] = (m[2], m[3]) = (m, m'1)
+                mem_value[0] += CLK[2] * m;
+                mem_value[1] += CLK[2] * m'1;
+
+                // CLK 3: read message[5] = (m[10], m[11]) = (m'7, m'8)
+                mem_value[0] += CLK[3] * m'7;
+                mem_value[1] += CLK[3] * m'8;
+
+                // CLK 56: write cv u64[1] = (h[2], h[3])
+                mem_value[0] += CLK[56] * va_xor_vc_packed'2;
+                mem_value[1] += CLK[56] * va_xor_vc_packed'3;
+
+            case 2:
+                // CLK 0: read cv u64[2] = (s[4], s[5]) = (vb_packed, vb_packed'1)
+                mem_value[0] += CLK[0] * vb_packed;
+                mem_value[1] += CLK[0] * vb_packed'1;
+
+                // CLK 1: port 2 is unused (aux only needs 2 ports).
+
+                // CLK 2: read message[2] = (m[4], m[5]) = (m'2, m'3)
+                mem_value[0] += CLK[2] * m'2;
+                mem_value[1] += CLK[2] * m'3;
+
+                // CLK 3: read message[6] = (m[12], m[13]) = (m'9, m'10)
+                mem_value[0] += CLK[3] * m'9;
+                mem_value[1] += CLK[3] * m'10;
+
+                // CLK 56: write cv u64[2] = (h[4], h[5])
+                mem_value[0] += CLK[56] * vb_xor_vd_packed;
+                mem_value[1] += CLK[56] * vb_xor_vd_packed'1;
+
+            case 3:
+                // CLK 0: read cv u64[3] = (s[6], s[7]) = (vb_packed'2, vb_packed'3)
+                mem_value[0] += CLK[0] * vb_packed'2;
+                mem_value[1] += CLK[0] * vb_packed'3;
+
+                // CLK 1: port 3 is unused.
+
+                // CLK 2: read message[3] = (m[6], m[7]) = (m'4, m'5)
+                mem_value[0] += CLK[2] * m'4;
+                mem_value[1] += CLK[2] * m'5;
+
+                // CLK 3: read message[7] = (m[14], m[15]) = (m'11, m'12)
+                mem_value[0] += CLK[3] * m'11;
+                mem_value[1] += CLK[3] * m'12;
+
+                // CLK 56: write cv u64[3] = (h[6], h[7])
+                mem_value[0] += CLK[56] * vb_xor_vd_packed'2;
+                mem_value[1] += CLK[56] * vb_xor_vd_packed'3;
+
+            default:
+                error(`Unexpected port index: ${port}`);
+        }
+
+        // Ports 2-3 are unused at CLK 1 (aux is only 2 u64s).
+        if (port >= 2) {
+            mem_sel -= CLK[1] * in_use;
+        }
+        // Ports 2-3 are unused at CLK 4 (only 2 indirect params).
+        if (port >= 2) {
+            mem_sel -= CLK[4] * in_use;
+        }
+
+        precompiled_mem_op(
+            is_write: mem_is_write,
+            sel: mem_sel,
+            main_step: main_step,
+            addr: mem_addr,
+            value: mem_value
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // MAIN PROCESSOR INTEGRATION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    col witness bits(1) in_use_clk_0;
+    in_use_clk_0 <== CLK_0 * in_use;
+
+    proves_operation(op: OP_BLAKE3F, b: [step_addr'(ADDR_OP), 0],
+                     main_step: step_addr'(STEP_MAIN), mul: in_use_clk_0);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // HELPER FUNCTIONS (reused from blake3r)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function pack_bits(const expr a[]): expr {
+        const int len = length(a);
+        expr packed = 0;
+        for (int j = 0; j < len; j++) {
+            packed += a[j] * 2**j;
+        }
+        return packed;
+    }
+
+    // Checks a == (b + c + d) mod 2^32 via explicit carry witness.
+    // Caller supplies `carry` ∈ {0, 1, 2} satisfying `a + carry * 2^32 == b + c + d`
+    // over the integers. Range-restriction of `carry` is enforced where it's declared.
+    // Degree after `g_active` gating: 2 (vs 4 with polynomial factoring).
+    function add3_check(const expr a, const expr b, const expr c, const expr d, const expr carry) {
+        air.g_active * (a + carry * P2_32 - b - c - d) === 0;
+    }
+
+    // Checks a == (b + c) mod 2^32 via explicit carry witness (carry ∈ {0, 1}).
+    // Degree after `g_active` gating: 2.
+    function add2_check(const expr a, const expr b, const expr c, const expr carry) {
+        air.g_active * (a + carry * P2_32 - b - c) === 0;
+    }
+
+    function rotl_xor_check(const expr a, const expr b[], const expr c[], const int n) {
+        expr b_rot[32];
+        for (int i = 0; i < 32; i++) {
+            b_rot[i] = b[(i + 32 - n) % 32];
+        }
+        expr xor_result[32];
+        for (int i = 0; i < 32; i++) {
+            xor_result[i] = b_rot[i] + c[i] - 2 * b_rot[i] * c[i];
+        }
+        expr packed = 0;
+        for (int i = 0; i < 32; i++) {
+            packed += xor_result[i] * 2**i;
+        }
+        air.g_active * (a - packed) === 0;
+    }
+
+    function clock_eq(const expr mvcol, int pos1, int pos2): const expr {
+        return air.CLK_0 * (mvcol'(pos1) - mvcol'(pos2));
+    }
+
+    function clock_set(const expr mvcol = 1, int start = 0, int end = -1, const int step = 1, const int skip = 0): const expr {
+        expr result = 0;
+        if (end == -1) {
+            end = start + 1;
+        }
+        int clock_idx = start;
+        int count = 0;
+        int in_group = 0;
+        while (count < end - start) {
+            result += air.CLK[clock_idx];
+            count++;
+            in_group++;
+            clock_idx++;
+            if (skip > 0 && in_group == step) {
+                clock_idx += skip;
+                in_group = 0;
+            }
+        }
+        return result * mvcol;
+    }
+
+    function clock_set_with_seq(const expr mvcol = 1, const int seq[]): const expr {
+        const int len = length(seq);
+        assert(len > 0);
+        expr result = 0;
+        for (int i = 0; i < len; i++) {
+            result += air.CLK[seq[i]];
+        }
+        return result * mvcol;
+    }
+
+    function clock_shift(const expr mvcol, const int pos, const int start = 0, int end = -1, const int step = 1, const int skip = 0, int offset = 0, const int delta = 0, const int offset_shift = 0): const expr {
+        expr result = 0;
+        if (end == -1) {
+            end = start + 1;
+        }
+        const int num_clocks = end - start;
+        int clock_idx = start;
+        int count = 0;
+        int in_group = 0;
+        while (count < num_clocks) {
+            const int col_idx = (pos - clock_idx) % air.CLOCKS;
+            const int shifted_count = (count + offset_shift) % num_clocks;
+            const int current_offset = offset + delta * shifted_count;
+            if (current_offset != 0) {
+                result += air.CLK[clock_idx] * (mvcol'(col_idx) + current_offset);
+            } else {
+                result += air.CLK[clock_idx] * mvcol'(col_idx);
+            }
+            count++;
+            in_group++;
+            clock_idx++;
+            if (skip > 0 && in_group == step) {
+                clock_idx += skip;
+                in_group = 0;
+            }
+        }
+        return result;
+    }
+
+    function clock_shift_with_seq(const expr mvcol, const int pos, const int seq[]): const expr {
+        const int len = length(seq);
+        assert(len > 0);
+        expr result = 0;
+        for (int i = 0; i < len; i++) {
+            const int col_idx = (pos - seq[i]) % air.CLOCKS;
+            result += air.CLK[seq[i]] * mvcol'(col_idx);
+        }
+        return result;
+    }
+}

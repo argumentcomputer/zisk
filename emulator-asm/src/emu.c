@@ -19,6 +19,7 @@
 #include "../../lib-c/c/src/bls12_381/bls12_381.hpp"
 #include "../../lib-c/c/src/poseidon2/poseidon2_goldilocks.hpp"
 #include "../../lib-c/c/src/blake2/blake2.hpp"
+#include "../../lib-c/c/src/blake3/blake3.hpp"
 #include "../../lib-c/c/src/chfast/zisk_keccak.h"
 
 extern void zisk_sha256(uint64_t state[4], uint64_t input[8]);
@@ -41,6 +42,8 @@ void reset_asm_call_metrics (void)
     asm_call_metrics.sha256_duration = 0;
     asm_call_metrics.blake2_counter = 0;
     asm_call_metrics.blake2_duration = 0;
+    asm_call_metrics.blake3_counter = 0;
+    asm_call_metrics.blake3_duration = 0;
     asm_call_metrics.poseidon2_counter = 0;
     asm_call_metrics.poseidon2_duration = 0;
     asm_call_metrics.arith256_counter = 0;
@@ -120,6 +123,16 @@ void print_asm_call_metrics (uint64_t total_duration)
     asm_printf("Blake2: counter = %lu, duration = %lu us, single duration = %lu ns, per thousand = %lu \n",
         asm_call_metrics.blake2_counter,
         asm_call_metrics.blake2_duration,
+        duration,
+        percentage);
+
+    // Print blake3 metrics
+    percentage = total_duration == 0 ? 0 : (asm_call_metrics.blake3_duration * 1000) / total_duration;
+    duration = asm_call_metrics.blake3_counter == 0 ? 0 : (asm_call_metrics.blake3_duration * 1000) / asm_call_metrics.blake3_counter;
+    asm_call_total_duration += asm_call_metrics.blake3_duration;
+    asm_printf("Blake3: counter = %lu, duration = %lu us, single duration = %lu ns, per thousand = %lu \n",
+        asm_call_metrics.blake3_counter,
+        asm_call_metrics.blake3_duration,
         duration,
         percentage);
 
@@ -642,6 +655,51 @@ extern int _opcode_blake2(uint64_t * address)
     asm_call_metrics.blake2_counter++;
     gettimeofday(&asm_call_stop, NULL);
     asm_call_metrics.blake2_duration += TimeDiff(asm_call_start, asm_call_stop);
+#endif
+    return 0;
+}
+
+extern int _opcode_blake3(uint64_t * address)
+{
+#ifdef ASM_CALL_METRICS
+    gettimeofday(&asm_call_start, NULL);
+#endif
+#ifdef DEBUG
+#ifdef ASM_CALL_METRICS
+    if (emu_verbose) asm_printf("opcode_blake3() calling blake3_compress() counter=%lu address=%p\n", asm_call_metrics.blake3_counter, address);
+#else
+    if (emu_verbose) asm_printf("opcode_blake3() calling blake3_compress() address=%p\n", address);
+#endif
+#endif
+
+#ifdef ASM_PRECOMPILE_CACHE
+    if (precompile_cache_storing)
+    {
+#endif
+        // Blake3 v2: io_ptr (6 u64s: 4 cv RW + 2 aux R), message_ptr (8 u64s R).
+        uint64_t * io = (uint64_t *) address[0];
+        const uint64_t * message = (const uint64_t *) address[1];
+        const uint64_t * aux = io + 4; // aux follows cv in the io buffer
+        blake3_compress(io, message, aux);
+
+#ifdef ASM_PRECOMPILE_CACHE
+        // Store updated cv (4 u64s = 32 bytes) in cache
+        precompile_cache_store((uint8_t *)address[0], 4*8);
+    }
+    else if (precompile_cache_loading)
+    {
+        // Load updated cv from cache
+        precompile_cache_load((uint8_t *)address[0], 4*8);
+    }
+#endif
+
+#ifdef DEBUG
+    if (emu_verbose) asm_printf("opcode_blake3() called blake3_compress()\n");
+#endif
+#ifdef ASM_CALL_METRICS
+    asm_call_metrics.blake3_counter++;
+    gettimeofday(&asm_call_stop, NULL);
+    asm_call_metrics.blake3_duration += TimeDiff(asm_call_start, asm_call_stop);
 #endif
     return 0;
 }

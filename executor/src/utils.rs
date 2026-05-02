@@ -5,6 +5,7 @@ use precomp_arith_eq::ArithEqManager;
 use precomp_arith_eq_384::ArithEq384Manager;
 use precomp_big_int::Add256Manager;
 use precomp_blake2::Blake2Manager;
+use precomp_blake3f::Blake3fManager;
 use precomp_dma::DmaManager;
 use precomp_keccakf::KeccakfManager;
 use precomp_poseidon2::Poseidon2Manager;
@@ -21,7 +22,8 @@ use witness::WitnessManager;
 use zisk_pil::PACKED_INFO;
 use zisk_pil::{
     ADD_256_AIR_IDS, ARITH_AIR_IDS, ARITH_EQ_384_AIR_IDS, ARITH_EQ_AIR_IDS, BINARY_ADD_AIR_IDS,
-    BINARY_AIR_IDS, BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, DMA_64_ALIGNED_AIR_IDS,
+    BINARY_AIR_IDS, BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, BLAKE_3_F_AIR_IDS,
+    DMA_64_ALIGNED_AIR_IDS,
     DMA_64_ALIGNED_INPUT_CPY_AIR_IDS, DMA_64_ALIGNED_MEM_AIR_IDS, DMA_64_ALIGNED_MEM_CPY_AIR_IDS,
     DMA_64_ALIGNED_MEM_SET_AIR_IDS, DMA_AIR_IDS, DMA_INPUT_CPY_AIR_IDS, DMA_MEM_CPY_AIR_IDS,
     DMA_PRE_POST_AIR_IDS, DMA_PRE_POST_INPUT_CPY_AIR_IDS, DMA_PRE_POST_MEM_CPY_AIR_IDS,
@@ -81,6 +83,7 @@ pub fn initialize_executor<F: PrimeField64>(
     let sha256f_sm = Sha256fManager::new(std.clone());
     let poseidon2_sm = Poseidon2Manager::new();
     let blake2_sm = Blake2Manager::new(std.clone());
+    let blake3_sm = Blake3fManager::new(std.clone());
     let arith_eq_sm = ArithEqManager::new(std.clone());
     let arith_eq_384_sm = ArithEq384Manager::new(std.clone());
     let add256_sm = Add256Manager::new(std.clone());
@@ -140,6 +143,10 @@ pub fn initialize_executor<F: PrimeField64>(
             (
                 vec![(ZISK_AIRGROUP_ID, BLAKE_2_BR_AIR_IDS[0])],
                 StateMachines::Blake2Manager(blake2_sm.clone()),
+            ),
+            (
+                vec![(ZISK_AIRGROUP_ID, BLAKE_3_F_AIR_IDS[0])],
+                StateMachines::Blake3fManager(blake3_sm.clone()),
             ),
             (
                 vec![(ZISK_AIRGROUP_ID, ARITH_EQ_AIR_IDS[0])],

@@ -7,6 +7,9 @@
   "Sha256f": {
     "hasCompressor": true
   },
+  "Blake3f": {
+    "hasCompressor": true
+  },
   "ArithEq": {
     "hasCompressor": true
   },
