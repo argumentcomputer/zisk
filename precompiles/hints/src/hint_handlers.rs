@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use zisk_common::{BuiltInHint, HintCode, PrecompileHint};
 use ziskos_hints::handlers::blake2b::blake2b_compress_hint;
+use ziskos_hints::handlers::blake3::blake3_hint;
 use ziskos_hints::handlers::bls381::{
     bls12_381_fp2_to_g2_hint, bls12_381_fp_to_g1_hint, bls12_381_g1_add_hint,
     bls12_381_g1_msm_hint, bls12_381_g2_add_hint, bls12_381_g2_msm_hint,
@@ -111,6 +112,9 @@ impl HintHandlers {
 
             // RIPEMD-160 Hint Codes
             BuiltInHint::Ripemd160 => ripemd160_hint(&data, data_len_bytes),
+
+            // Blake3 Hint Codes
+            BuiltInHint::Blake3 => blake3_hint(&data, data_len_bytes),
 
             // Input Hint Codes
             BuiltInHint::Input => unreachable!(

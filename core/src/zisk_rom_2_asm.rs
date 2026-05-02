@@ -250,6 +250,7 @@ impl ZiskAsmContext {
                 | ZiskOp::Secp256r1Add
                 | ZiskOp::Secp256r1Dbl
                 | ZiskOp::Blake2
+                | ZiskOp::Blake3
         )
     }
 
@@ -322,6 +323,10 @@ impl ZiskAsmContext {
         self.precompile_results()
     }
     pub fn precompile_results_blake2(&self) -> bool {
+        //self.precompile_results()
+        false
+    }
+    pub fn precompile_results_blake3(&self) -> bool {
         //self.precompile_results()
         false
     }
@@ -654,6 +659,7 @@ impl ZiskRom2Asm {
         *code += ".extern opcode_bls12_381_complex_mul\n";
         *code += ".extern opcode_add256\n";
         *code += ".extern opcode_blake2\n";
+        *code += ".extern opcode_blake3\n";
         *code += ".extern chunk_done\n";
         *code += ".extern print_fcall_ctx\n";
         *code += ".extern print_pc\n";
@@ -5440,6 +5446,70 @@ impl ZiskRom2Asm {
                 // Set result
                 *code +=
                     &format!("\txor {}, {} {}\n", REG_C, REG_C, ctx.comment_str("Blake2: c = 0"));
+                ctx.c.is_saved = true;
+                ctx.flag_is_always_zero = true;
+            }
+            ZiskOp::Blake3 => {
+                *code += &ctx.full_line_comment("Blake3: rdi = b".to_string());
+
+                if !ctx.chunk_player_mt_collect_mem() && !ctx.chunk_player_mem_reads_collect_main()
+                {
+                    *code += &format!(
+                        "\tmov rdi, {} {}\n",
+                        ctx.b.string_value,
+                        ctx.comment_str("rdi = b = address")
+                    );
+
+                    if ctx.minimal_trace() || ctx.zip() || ctx.mem_reads() {
+                        if ctx.zip() {
+                            *code += &format!(
+                                "\ttest {}, 1 {}\n",
+                                REG_ACTIVE_CHUNK,
+                                ctx.comment_str("active_chunk == 1 ?")
+                            );
+                            *code += &format!("\tjnz pc_{:x}_blake3_active_chunk\n", ctx.pc);
+                            *code += &format!("\tjmp pc_{:x}_blake3_active_chunk_done\n", ctx.pc);
+                            *code += &format!("pc_{:x}_blake3_active_chunk:\n", ctx.pc);
+                        }
+                        Self::precompiled_save_mem_reads(ctx, code, 2, &[6, 8]);
+                        if ctx.zip() {
+                            *code += &format!("pc_{:x}_blake3_active_chunk_done:\n", ctx.pc);
+                        }
+                    }
+
+                    if ctx.mem_op() {
+                        Self::mem_op_precompiled_read_and_write(ctx, code, 2, &[6, 8], 0, 0, 4);
+                    }
+
+                    Self::push_internal_registers(ctx, code, false);
+                    *code += "\tcall _opcode_blake3\n";
+                    Self::pop_internal_registers(ctx, code, false);
+                }
+
+                if ctx.chunk_player_mem_reads_collect_main() {
+                    *code += &format!(
+                        "\tmov [{} + {}*8], {} {}\n",
+                        REG_MEM_READS_ADDRESS,
+                        REG_MEM_READS_SIZE,
+                        REG_CHUNK_PLAYER_ADDRESS,
+                        ctx.comment_str("Main[4] = precompiler data address")
+                    );
+                    *code += &format!(
+                        "\tinc {} {}\n",
+                        REG_MEM_READS_SIZE,
+                        ctx.comment_str("mem_reads_size++")
+                    );
+                }
+                if ctx.chunk_player_mt_collect_mem() || ctx.chunk_player_mem_reads_collect_main() {
+                    *code += &format!(
+                        "\tadd {}, 16*8 {}\n",
+                        REG_CHUNK_PLAYER_ADDRESS,
+                        ctx.comment_str("chunk_address += 16*8")
+                    );
+                }
+
+                *code +=
+                    &format!("\txor {}, {} {}\n", REG_C, REG_C, ctx.comment_str("Blake3: c = 0"));
                 ctx.c.is_saved = true;
                 ctx.flag_is_always_zero = true;
             }
