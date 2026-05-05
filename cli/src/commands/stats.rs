@@ -400,6 +400,7 @@ impl ZiskStats {
             val if val == KECCAKF_AIR_IDS[0] => "KECCAKF".to_string(),
             // val if val == KECCAKF_TABLE_AIR_IDS[0] => "KECCAKF_TABLE".to_string(),
             val if val == SHA_256_F_AIR_IDS[0] => "SHA_256_F".to_string(),
+            val if val == BLAKE_3_F_AIR_IDS[0] => "BLAKE_3_F".to_string(),
             // val if val == SPECIFIED_RANGES_AIR_IDS[0] => "SPECIFIED_RANGES".to_string(),
             _ => format!("Unknown air_id: {air_id}"),
         }
