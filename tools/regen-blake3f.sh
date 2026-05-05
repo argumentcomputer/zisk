@@ -141,7 +141,7 @@ step_end
 
 # ── Step 5 (pre-flight checks) ────────────────────────────────────────────
 # Run as the last gate so any constraint/witness bug surfaces here, before
-# you commit to the ~45-min proving-key generation in regen-blake3f-pk.sh.
+# you commit to the 1 hr+ proving-key generation in regen-blake3f-pk.sh.
 if [[ $SKIP_TESTS -eq 0 ]]; then
     step_begin "Step 5/5: Pre-flight checks (tests + execute)"
 

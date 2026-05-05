@@ -2028,6 +2028,7 @@ dependencies = [
  "precomp-arith-eq-384",
  "precomp-big-int",
  "precomp-blake2",
+ "precomp-blake3f",
  "precomp-dma",
  "precomp-keccakf",
  "precomp-poseidon2",
@@ -3980,6 +3981,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "precomp-blake3f"
+version = "0.17.0"
+dependencies = [
+ "fields",
+ "mem-common",
+ "pil-std-lib",
+ "precompiles-common",
+ "precompiles-helpers",
+ "proofman-common",
+ "proofman-macros",
+ "proofman-util",
+ "rayon",
+ "sm-mem",
+ "tracing",
+ "zisk-common",
+ "zisk-core",
+ "zisk-pil",
+]
+
+[[package]]
 name = "precomp-dma"
 version = "0.18.0"
 dependencies = [
@@ -4083,6 +4104,7 @@ dependencies = [
  "ark-secp256k1",
  "ark-secp256r1",
  "ark-std 0.5.0",
+ "blake3",
  "cfg-if",
  "circuit",
  "crunchy",
