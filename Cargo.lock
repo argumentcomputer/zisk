@@ -848,6 +848,14 @@ dependencies = [
 
 [[package]]
 name = "blake3"
+version = "1.8.4"
+dependencies = [
+ "arrayvec",
+ "ziskos",
+]
+
+[[package]]
+name = "blake3"
 version = "1.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0aa83c34e62843d924f905e0f5c866eb1dd6545fc4d719e803d9ba6030371fce"
@@ -4058,7 +4066,7 @@ dependencies = [
  "ark-secp256k1",
  "ark-secp256r1",
  "ark-std 0.5.0",
- "blake3",
+ "blake3 1.8.5",
  "cfg-if",
  "circuit",
  "crunchy",
@@ -4151,7 +4159,7 @@ version = "0.17.0"
 source = "git+https://github.com/0xPolygonHermez/pil2-proofman.git?tag=v0.17.0#ff0e33a9b40f2467b35ef26aa2aabb4a624dfed3"
 dependencies = [
  "bincode",
- "blake3",
+ "blake3 1.8.5",
  "borsh",
  "bytemuck",
  "chrono",
@@ -4751,7 +4759,7 @@ name = "rom-setup"
 version = "0.17.0"
 dependencies = [
  "anyhow",
- "blake3",
+ "blake3 1.8.5",
  "colored",
  "fields",
  "proofman-common",
@@ -7371,7 +7379,7 @@ name = "zisk-build"
 version = "0.17.0"
 dependencies = [
  "anyhow",
- "blake3",
+ "blake3 1.8.5",
  "cargo_metadata",
  "clap",
  "rom-setup",
@@ -7450,7 +7458,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "bincode",
- "blake3",
+ "blake3 1.8.5",
  "cargo-zisk",
  "chrono",
  "clap",
@@ -7517,7 +7525,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "blake3",
+ "blake3 1.8.5",
  "chrono",
  "clap",
  "config",
@@ -7605,7 +7613,7 @@ dependencies = [
  "anyhow",
  "asm-runner",
  "bincode",
- "blake3",
+ "blake3 1.8.5",
  "borsh",
  "colored",
  "executor",

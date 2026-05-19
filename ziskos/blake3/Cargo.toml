@@ -1,0 +1,29 @@
+[package]
+# `name = "blake3"` so a consumer can drop this in with one line:
+#
+#   [patch.crates-io]
+#   blake3 = { git = "https://github.com/argumentcomputer/zisk.git", \
+#              branch = "blake3-precompile-v0.17" }
+#
+# at which point the kernel's existing `blake3::Hasher` / `blake3::hash` /
+# `blake3::Hash` calls compile and run, but on the Zisk zkVM target every
+# hash is computed by the Blake3f precompile instead of soft Blake3.
+name = "blake3"
+version = "1.8.4"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Zisk precompile-backed drop-in for the blake3 crate (used via [patch.crates-io])."
+keywords = ["zisk", "zkvm", "blake3", "precompile"]
+repository = "https://github.com/argumentcomputer/zisk"
+
+[dependencies]
+# `default-features = false` drops `user-hints`, which pulls in
+# `zisk-common → proofman → blake3`. Once consumers patch `blake3` to this
+# crate, that path becomes a resolver cycle (shim → ziskos → proofman →
+# blake3 → shim). The precompile entry point lives in `zisklib`, which
+# is available without `user-hints`.
+ziskos = { path = "../entrypoint", default-features = false }
+
+# `to_hex` returns the same `ArrayString<64>` type as upstream `blake3`,
+# so callers chaining `.as_str()` / `.chars()` keep working unchanged.
+arrayvec = { version = "0.7", default-features = false }
