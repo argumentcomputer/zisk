@@ -3990,7 +3990,7 @@ dependencies = [
 
 [[package]]
 name = "precomp-blake3f"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "fields",
  "mem-common",
@@ -7520,7 +7520,6 @@ dependencies = [
  "async-stream",
  "bincode",
  "blake3 1.8.5",
- "cargo-zisk",
  "chrono",
  "clap",
  "colored",
