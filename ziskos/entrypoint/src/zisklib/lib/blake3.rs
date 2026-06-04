@@ -1,8 +1,12 @@
 use crate::syscalls::{syscall_blake3_f, Blake3Io, SyscallBlake3Params};
 
-// `ziskos` is no_std; `Vec` comes from the alloc crate re-export used by the
-// rest of zisklib (see `bin_decomp.rs`, `bigint/*`). Without this the zisk
-// guest build fails with `cannot find type Vec`.
+// On the zkvm/zisk target `ziskos` is no_std; `Vec` comes from the alloc
+// re-export the rest of zisklib uses (see `bin_decomp.rs`, `bigint/*`).
+// cfg-gated to the guest target: `alloc_extern` is only defined there
+// (lib.rs), and the host-side `ziskos-hints` build of this same file gets
+// `Vec` from the std prelude. Without this the zisk guest build fails with
+// `cannot find type Vec`.
+#[cfg(all(target_os = "zkvm", target_vendor = "zisk"))]
 use crate::alloc_extern::vec::Vec;
 
 use super::is_aligned_8;
