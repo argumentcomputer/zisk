@@ -1,5 +1,10 @@
 use crate::syscalls::{syscall_blake3_f, Blake3Io, SyscallBlake3Params};
 
+// `ziskos` is no_std; `Vec` comes from the alloc crate re-export used by the
+// rest of zisklib (see `bin_decomp.rs`, `bigint/*`). Without this the zisk
+// guest build fails with `cannot find type Vec`.
+use crate::alloc_extern::vec::Vec;
+
 use super::is_aligned_8;
 
 /// Blake3 initialization vectors (same as SHA-256 first 8 primes)
