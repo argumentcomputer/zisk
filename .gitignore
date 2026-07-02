@@ -31,3 +31,5 @@ reth-inputs/
 /hints
 /benchmark
 dist/
+
+.direnv/

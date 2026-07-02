@@ -44,6 +44,7 @@ members = [
   "precompiles/keccakf",
   "precompiles/sha256f",
   "precompiles/blake2",
+  "precompiles/blake3f",
   "precompiles/big_int",
   "precompiles/dma",
   "precompiles/poseidon",
@@ -67,6 +68,12 @@ members = [
   "definitions",
   "zkvm-interface",
   "verifier",
+  # `ziskos/blake3` exposes `name = "blake3" v1.8.4` — a drop-in precompile
+  # binding consumed downstream via `[patch.crates-io]`. Kept in-workspace
+  # so `cargo build --workspace` covers it. The workspace's own
+  # `blake3` dep (proofman, rom-setup, etc.) stays on crates.io;
+  # cargo only redirects to the local crate when a downstream patch asks.
+  "ziskos/blake3",
 ]
 resolver = "2"
 exclude = ["test-artifacts"]
@@ -96,6 +103,7 @@ precompiles-helpers = { path = "precompiles/helpers" }
 precomp-keccakf = { path = "precompiles/keccakf" }
 precomp-sha256f = { path = "precompiles/sha256f" }
 precomp-blake2 = { path = "precompiles/blake2" }
+precomp-blake3f = { path = "precompiles/blake3f" }
 precomp-poseidon = { path = "precompiles/poseidon" }
 precomp-big-int = { path = "precompiles/big_int" }
 precomp-dma = { path = "precompiles/dma" }

@@ -18,6 +18,7 @@ use precomp_arith_eq_384::{
 };
 use precomp_big_int::{Add256Collector, Add256CounterInputGen, Add256Instance, Add256Manager};
 use precomp_blake2::{Blake2Collector, Blake2CounterInputGen, Blake2Instance, Blake2Manager};
+use precomp_blake3f::{Blake3fCollector, Blake3fCounterInputGen, Blake3fInstance, Blake3fManager};
 use precomp_keccakf::{KeccakfCollector, KeccakfCounterInputGen, KeccakfInstance, KeccakfManager};
 use precomp_poseidon::{
     PoseidonCollector, PoseidonCounterInputGen, PoseidonInstance, PoseidonManager,
@@ -26,11 +27,11 @@ use precomp_sha256f::{Sha256fCollector, Sha256fCounterInputGen, Sha256fInstance,
 use zisk_common::ComponentBuilder;
 use zisk_core::{
     ARITH_EQ_384_OP_TYPE_ID, ARITH_EQ_OP_TYPE_ID, BIG_INT_OP_TYPE_ID, BLAKE2_OP_TYPE_ID,
-    KECCAK_OP_TYPE_ID, POSEIDON_OP_TYPE_ID, SHA256_OP_TYPE_ID,
+    BLAKE3_OP_TYPE_ID, KECCAK_OP_TYPE_ID, POSEIDON_OP_TYPE_ID, SHA256_OP_TYPE_ID,
 };
 use zisk_pil::{
-    ADD_256_AIR_IDS, ARITH_EQ_384_AIR_IDS, ARITH_EQ_AIR_IDS, BLAKE_2_BR_AIR_IDS, KECCAKF_AIR_IDS,
-    POSEIDON_AIR_IDS, SHA_256_F_AIR_IDS,
+    ADD_256_AIR_IDS, ARITH_EQ_384_AIR_IDS, ARITH_EQ_AIR_IDS, BLAKE_2_BR_AIR_IDS,
+    BLAKE_3_F_AIR_IDS, KECCAKF_AIR_IDS, POSEIDON_AIR_IDS, SHA_256_F_AIR_IDS,
 };
 
 crate::register_precompiles! {
@@ -54,6 +55,11 @@ crate::register_precompiles! {
         air: BLAKE_2_BR_AIR_IDS,
         rank_assign: false,
     ] => Blake2Manager<F>,
+    Blake3f [
+        op: BLAKE3_OP_TYPE_ID,
+        air: BLAKE_3_F_AIR_IDS,
+        rank_assign: false,
+    ] => Blake3fManager<F>,
     ArithEq [
         op: ARITH_EQ_OP_TYPE_ID,
         air: ARITH_EQ_AIR_IDS,

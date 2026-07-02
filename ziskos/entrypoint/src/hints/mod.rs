@@ -1,5 +1,6 @@
 mod bigint;
 mod blake2b;
+mod blake3;
 mod bls12_381;
 mod bn254;
 mod custom;
@@ -41,6 +42,7 @@ use std::thread::ThreadId;
 
 pub use bigint::*;
 pub use blake2b::*;
+pub use blake3::*;
 pub use bls12_381::*;
 pub use bn254::*;
 pub use custom::*;

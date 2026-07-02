@@ -13,6 +13,7 @@ pub const FCALL_COST: u64 = INTERNAL_COST;
 pub const ARITH_EQ_384_COST: u64 = 79 * 24;
 pub const ADD256_COST: u64 = 104;
 pub const BLAKE2_COST: u64 = 24 * 205;
+pub const BLAKE3_COST: u64 = 60 * 200;
 
 /*
     Hash throughput comparison:

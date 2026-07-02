@@ -22,6 +22,9 @@ num-traits = { workspace = true }
 cfg-if = "1.0"
 crunchy = "0.2"
 
+[dev-dependencies]
+blake3 = "1.8.5"
+
 [features]
 default = []
 debug_dma = []

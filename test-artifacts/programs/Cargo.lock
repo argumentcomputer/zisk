@@ -1851,6 +1851,7 @@ dependencies = [
  "precomp-arith-eq-384",
  "precomp-big-int",
  "precomp-blake2",
+ "precomp-blake3f",
  "precomp-dma",
  "precomp-keccakf",
  "precomp-poseidon",
@@ -3513,6 +3514,23 @@ dependencies = [
  "fields",
  "pil-std-lib",
  "precompiles-common",
+ "proofman-common",
+ "proofman-util",
+ "rayon",
+ "tracing",
+ "zisk-common",
+ "zisk-core",
+ "zisk-pil",
+]
+
+[[package]]
+name = "precomp-blake3f"
+version = "1.0.0-alpha"
+dependencies = [
+ "fields",
+ "pil-std-lib",
+ "precompiles-common",
+ "precompiles-helpers",
  "proofman-common",
  "proofman-util",
  "rayon",

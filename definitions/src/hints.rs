@@ -69,3 +69,6 @@ pub const HINT_BLAKE2B_COMPRESS: u32 = 0x0800;
 
 // RIPEMD-160 hint codes
 pub const HINT_RIPEMD160: u32 = 0x0900;
+
+// Blake3 hint codes
+pub const HINT_BLAKE3: u32 = 0x0A00;

@@ -2,7 +2,8 @@
 
 use zisk_pil::{
     ADD_256_AIR_IDS, ARITH_AIR_IDS, ARITH_EQ_384_AIR_IDS, ARITH_EQ_AIR_IDS, BINARY_ADD_AIR_IDS,
-    BINARY_AIR_IDS, BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, DMA_64_ALIGNED_AIR_IDS,
+    BINARY_AIR_IDS, BINARY_EXTENSION_AIR_IDS, BLAKE_2_BR_AIR_IDS, BLAKE_3_F_AIR_IDS,
+    DMA_64_ALIGNED_AIR_IDS,
     DMA_64_ALIGNED_INPUT_CPY_AIR_IDS, DMA_64_ALIGNED_MEM_AIR_IDS, DMA_64_ALIGNED_MEM_CPY_AIR_IDS,
     DMA_64_ALIGNED_MEM_SET_AIR_IDS, DMA_AIR_IDS, DMA_INPUT_CPY_AIR_IDS, DMA_MEM_CPY_AIR_IDS,
     DMA_PRE_POST_AIR_IDS, DMA_PRE_POST_INPUT_CPY_AIR_IDS, DMA_PRE_POST_MEM_CPY_AIR_IDS,
@@ -94,6 +95,8 @@ impl AirClassifier {
             "Poseidon"
         } else if BLAKE_2_BR_AIR_IDS.contains(&air_id) {
             "Blake2"
+        } else if BLAKE_3_F_AIR_IDS.contains(&air_id) {
+            "Blake3f"
         } else if VIRTUAL_TABLE_ZISK_0_AIR_IDS.contains(&air_id) {
             "VirtualTable0"
         } else if VIRTUAL_TABLE_ZISK_1_AIR_IDS.contains(&air_id) {

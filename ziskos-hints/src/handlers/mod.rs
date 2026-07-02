@@ -1,5 +1,6 @@
 pub mod bigint;
 pub mod blake2b;
+pub mod blake3;
 pub mod bls381;
 pub mod bn254;
 pub mod keccak256;
