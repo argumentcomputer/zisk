@@ -297,6 +297,13 @@ void MemOffsets::fill_padding(void) {
     uint32_t base = page_offsets[last_page] * OFFSET_PAGE_SIZE;
     uint32_t last_value = offsets[base + last_in_page];
 
+    // The offsets array is sized by exact demand (realloc_offsets /
+    // preallocate), so its capacity need not extend to the end of the last
+    // page; grow it before padding writes past the allocation.
+    if (base + OFFSET_PAGE_SIZE > num_offsets) {
+        realloc_offsets(base + OFFSET_PAGE_SIZE - 1);
+    }
+
     for (uint32_t i = last_in_page + 1; i < OFFSET_PAGE_SIZE; ++i) {
         offsets[base + i] = last_value;
     }
